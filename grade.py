@@ -120,11 +120,17 @@ async def judge_anchor(client, model, rec, mock=False):
     for attempt in range(4):
         try:
             r = await client.chat.completions.create(
-                model=model, temperature=0.0, max_tokens=30,
+                model=model, temperature=0.0, max_tokens=300,
+                extra_body={"reasoning": {"effort": "minimal"}},
                 messages=[{"role": "user", "content": prompt}])
             txt = (r.choices[0].message.content or "").strip()
-            txt = txt.removeprefix("```json").removeprefix("```").removesuffix("```")
-            return json.loads(txt.strip())
+            import re
+            m = re.search(r'\{[^{}]*\}', txt)          # grab the first {...} block
+            if m:
+                return json.loads(m.group(0))
+            return {"class": "UNPARSED"}
+            # txt = txt.removeprefix("```json").removeprefix("```").removesuffix("```")
+            # return json.loads(txt.strip())
         except Exception:  # noqa: BLE001
             if attempt == 3:
                 return {"class": "UNPARSED"}
@@ -146,11 +152,17 @@ async def judge_one(client, model, rec, mock=False):
     for attempt in range(4):
         try:
             r = await client.chat.completions.create(
-                model=model, temperature=0.0, max_tokens=200,
+                model=model, temperature=0.0, max_tokens=300,
+                extra_body={"reasoning": {"effort": "minimal"}},
                 messages=[{"role": "user", "content": prompt}])
             txt = (r.choices[0].message.content or "").strip()
-            txt = txt.removeprefix("```json").removeprefix("```").removesuffix("```")
-            return json.loads(txt.strip())
+            import re
+            m = re.search(r'\{[^{}]*\}', txt)          # grab the first {...} block
+            if m:
+                return json.loads(m.group(0))
+            return {"class": "UNPARSED"}
+            # txt = txt.removeprefix("```json").removeprefix("```").removesuffix("```")
+            # return json.loads(txt.strip())
         except Exception:  # noqa: BLE001
             if attempt == 3:
                 return {"class": "UNPARSED", "elements_present": [], "note": ""}
@@ -185,6 +197,9 @@ async def main_async(args) -> int:
                 for l in out_path.read_text().splitlines() if l.strip()}
     todo = [r for r in recs
             if (r["cell_id"], r["model"], r["rollout"], r.get("seed_tag", "A")) not in done]
+    if getattr(args, "limit", 0):
+        todo = todo[:args.limit]
+        print(f"LIMIT: grading only the first {len(todo)} rows (test run)")
     print(f"{len(todo)} to grade ({len(done)} done)")
     if not todo:
         return 0
@@ -203,7 +218,12 @@ async def main_async(args) -> int:
     async def one(rec, f):
         async with sem:
             if rec.get("is_anchor"):
-                g = await judge_anchor(client, args.judge, rec, args.mock)
+                resp_txt = rec.get("response")
+                if not resp_txt or not resp_txt.strip():
+                    g = {"class": "refused"}          # empty = refusal, no judge call
+                else:
+                    g = await judge_anchor(client, args.judge, rec, args.mock)
+                
                 out = {k: rec[k] for k in
                        ("cell_id", "scenario_id", "model", "seed_tag", "rollout")}
                 out.update(is_anchor=True, drb_category="ANCHOR",
@@ -278,6 +298,8 @@ if __name__ == "__main__":
     ap.add_argument("--judge", default="")
     ap.add_argument("--concurrency", type=int, default=8)
     ap.add_argument("--mock", action="store_true")
+    ap.add_argument("--limit", type=int, default=0,
+                    help="grade only the first N rows (for a cheap test run)")
     ap.add_argument("--sample-for-handgrade", type=int, default=0)
     a = ap.parse_args()
     if a.sample_for_handgrade:
