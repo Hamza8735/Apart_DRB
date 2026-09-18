@@ -47,6 +47,7 @@ import json
 import pathlib
 import random
 import sys
+import time
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
@@ -360,12 +361,33 @@ async def main_async(args) -> int:
     out_path = ROOT / "out" / "graded.jsonl"
     out_path.parent.mkdir(exist_ok=True)
 
+    # Build the judge client BEFORE anything destructive. --regrade-anchors
+    # rewrites graded.jsonl in place, and a missing dependency or unset key
+    # must not be discovered only after the old grades are gone.
+    if args.mock:
+        client = None
+    else:
+        try:
+            from openai import AsyncOpenAI
+        except ImportError:
+            print("pip install openai", file=sys.stderr)
+            return 1
+        import os
+        key = os.environ.get("OPENROUTER_API_KEY")
+        if not key:
+            print("set OPENROUTER_API_KEY", file=sys.stderr)
+            return 1
+        client = AsyncOpenAI(base_url="https://openrouter.ai/api/v1", api_key=key)
+
     if args.regrade_anchors and out_path.exists():
-        kept = [l for l in out_path.read_text().splitlines()
-                if l.strip() and not json.loads(l).get("is_anchor")]
-        n_drop = sum(1 for l in out_path.read_text().splitlines() if l.strip()) - len(kept)
+        lines = [l for l in out_path.read_text().splitlines() if l.strip()]
+        backup = out_path.with_suffix(f".{int(time.time())}.bak")
+        backup.write_text("".join(l + "\n" for l in lines))
+        kept = [l for l in lines if not json.loads(l).get("is_anchor")]
         out_path.write_text("".join(l + "\n" for l in kept))
-        print(f"--regrade-anchors: dropped {n_drop} anchor rows, kept {len(kept)}")
+        print(f"--regrade-anchors: backed up {len(lines)} rows -> {backup.name}")
+        print(f"--regrade-anchors: dropped {len(lines) - len(kept)} anchor rows, "
+              f"kept {len(kept)}")
 
     done = set()
     if out_path.exists():
@@ -389,14 +411,6 @@ async def main_async(args) -> int:
     print(f"{len(todo)} to grade ({len(done)} done)")
     if not todo and not ungradeable:
         return 0
-
-    if args.mock:
-        client = None
-    else:
-        from openai import AsyncOpenAI
-        import os
-        client = AsyncOpenAI(base_url="https://openrouter.ai/api/v1",
-                             api_key=os.environ["OPENROUTER_API_KEY"])
 
     sem = asyncio.Semaphore(args.concurrency)
     lock = asyncio.Lock()
