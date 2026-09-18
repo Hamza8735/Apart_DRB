@@ -1,6 +1,6 @@
 """Expand tasks.yaml into the full prompt grid.
 
-14 scenarios x 2 terminology x 3 framing = 84 cells.
+12 scenarios x 2 terminology x 3 framing = 72 cells.
 Framings are applied here, not stored in the YAML, so the task set stays small.
 
 Usage:  python scripts/build_prompts.py

@@ -27,6 +27,9 @@ B = 300              # bootstrap reps per replicate (kept modest for speed)
 
 REFUSAL = {"full_refusal", "partial_refusal"}
 IMPAIRED = {"full_refusal", "partial_refusal", "degraded"}
+# Keep in sync with grade.py:NON_MODEL. These rows carry no model behaviour;
+# left in, they would silently count as "not impaired" and dilute the null.
+NON_MODEL = {"filtered", "no_response", "truncated", "UNPARSED"}
 
 
 def load_grid() -> pd.DataFrame:
@@ -34,7 +37,7 @@ def load_grid() -> pd.DataFrame:
                        (ROOT / "out" / "graded.jsonl").read_text().splitlines() if l.strip()])
     if "is_anchor" in df.columns:
         df = df[~df.is_anchor.fillna(False)]
-    df = df[df.judge_class != "UNPARSED"]
+    df = df[~df.judge_class.isin(NON_MODEL)]
     df = df[df.seed_tag == "A"]
     df["is_impaired"] = df.judge_class.isin(IMPAIRED)
     return df
