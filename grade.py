@@ -518,33 +518,78 @@ async def main_async(args) -> int:
     return 0
 
 
-def sample_for_handgrade(n: int) -> int:
-    """Write a blind CSV for you to hand-grade. Model identity is stripped."""
+def sample_for_handgrade(n: int, population: str = "all") -> int:
+    """Write a blind hand-grade sheet plus a separate answer key.
+
+    population: "anchor", "grid", or "all". The two populations have opposite
+    class balance (the grid is ~all full_compliance, the anchor is ~all
+    full_refusal), so a single sample stratified across both would draw every
+    refusal from the anchor and misrepresent each. Sample them separately.
+
+    Sizing: EVERY row whose class is not the majority class is included (a
+    census of the informative rows -- the ones the judge could plausibly get
+    wrong), then the majority class is randomly sampled to reach n. That
+    guarantees the rare classes are all present, which is what both Cohen's
+    kappa and the rule-of-three error bound depend on; spending the budget on
+    more majority rows buys almost nothing.
+
+    Two files are written so no manual column surgery is needed (that step was
+    the easy way to misalign grades and labels):
+      handgrade[_pop].csv       id, prompt, response, your_class   <- you fill
+      handgrade[_pop]_key.csv   id, judge_class                    <- do not open
+    kappa.py joins them on id, so re-sorting the sheet in a spreadsheet is safe.
+    """
     graded = [json.loads(l) for l in
               (ROOT / "out" / "graded.jsonl").read_text().splitlines() if l.strip()]
     graded = [g for g in graded if g["judge_class"] not in NON_MODEL]
+    if population == "anchor":
+        graded = [g for g in graded if g.get("is_anchor")]
+    elif population == "grid":
+        graded = [g for g in graded if not g.get("is_anchor")]
+    elif population != "all":
+        print(f"unknown --population {population!r}", file=sys.stderr)
+        return 1
+    if not graded:
+        print(f"no gradeable rows for population={population!r}", file=sys.stderr)
+        return 1
     resp = {(r["cell_id"], r["model"], r["rollout"], r.get("seed_tag", "A")): r
             for r in (json.loads(l) for l in
                       (ROOT / "out" / "responses.jsonl").read_text().splitlines() if l.strip())}
-    # Stratify by judge class so rare classes are represented.
-    by_class: dict = {}
+
+    counts: dict = {}
     for g in graded:
-        by_class.setdefault(g["judge_class"], []).append(g)
+        counts[g["judge_class"]] = counts.get(g["judge_class"], 0) + 1
+    majority = max(counts, key=counts.get)
+    minority = [g for g in graded if g["judge_class"] != majority]
+    major_rows = [g for g in graded if g["judge_class"] == majority]
     random.seed(7)
-    picked = []
-    per = max(1, n // max(1, len(by_class)))
-    for cls, items in by_class.items():
-        picked += random.sample(items, min(per, len(items)))
+    random.shuffle(major_rows)
+    need = max(0, n - len(minority))
+    picked = minority + major_rows[:need]
     random.shuffle(picked)
-    out = ROOT / "out" / "handgrade.csv"
-    with out.open("w", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(["idx", "prompt", "response", "your_class", "judge_class_HIDDEN"])
+    if len(minority) > n:
+        print(f"note: {len(minority)} non-majority rows exceed n={n}; keeping all "
+              "of them (never drop the informative cases)")
+
+    suffix = "" if population == "all" else f"_{population}"
+    sheet = ROOT / "out" / f"handgrade{suffix}.csv"
+    key = ROOT / "out" / f"handgrade{suffix}_key.csv"
+    with sheet.open("w", newline="") as f, key.open("w", newline="") as kf:
+        w = csv.writer(f); kw = csv.writer(kf)
+        w.writerow(["id", "prompt", "response", "your_class"])
+        kw.writerow(["id", "judge_class"])
         for i, g in enumerate(picked):
             r = resp[(g["cell_id"], g["model"], g["rollout"], g.get("seed_tag", "A"))]
-            w.writerow([i, r["prompt"], r["response"], "", g["judge_class"]])
-    print(f"{len(picked)} rows -> {out}")
-    print("Delete the judge_class_HIDDEN column into a separate file before grading.")
+            w.writerow([i, r["prompt"], r["response"], ""])
+            kw.writerow([i, g["judge_class"]])
+    comp = {}
+    for g in picked:
+        comp[g["judge_class"]] = comp.get(g["judge_class"], 0) + 1
+    print(f"population={population}  {len(picked)} rows -> {sheet.name}  (+ key {key.name})")
+    print(f"  composition: {comp}")
+    print(f"  grade the your_class column in {sheet.name}; do not open {key.name}; "
+          "then: python scripts/kappa.py"
+          + ("" if population == "all" else f" --population {population}"))
     return 0
 
 
@@ -560,9 +605,11 @@ if __name__ == "__main__":
                     help="salvage truncated anchor verdicts from judge_raw without "
                          "calling the API, then re-judge only what is left")
     ap.add_argument("--sample-for-handgrade", type=int, default=0)
+    ap.add_argument("--population", choices=["all", "grid", "anchor"], default="all",
+                    help="which population to sample for --sample-for-handgrade")
     a = ap.parse_args()
     if a.sample_for_handgrade:
-        raise SystemExit(sample_for_handgrade(a.sample_for_handgrade))
+        raise SystemExit(sample_for_handgrade(a.sample_for_handgrade, a.population))
     if not a.judge:
         print("--judge required", file=sys.stderr)
         raise SystemExit(1)
