@@ -5,14 +5,16 @@ XSTest (Fleiss kappa up to 0.97), DRB (Cohen's kappa 0.60 judge-vs-human),
 the secret-loyalties audit (Cohen's kappa 0.82). Yours needs one too, or the
 refusal taxonomy is unfalsifiable.
 
-Workflow:
-  1. python scripts/grade.py --sample-for-handgrade 100
-     -> writes out/handgrade.csv with a hidden judge column
-  2. Copy the judge_class_HIDDEN column into out/handgrade_key.csv (one column),
-     then delete it from handgrade.csv and grade the 100 yourself in your_class.
-  3. python scripts/kappa.py
+Workflow (per population; the anchor and grid are graded separately):
+  1. python scripts/grade.py --sample-for-handgrade 40 --population anchor
+     python scripts/grade.py --sample-for-handgrade 60 --population grid
+     -> each writes handgrade_<pop>.csv (blind) and handgrade_<pop>_key.csv
+  2. Fill the your_class column in handgrade_<pop>.csv. Do not open the key.
+  3. python scripts/kappa.py --population anchor
+     python scripts/kappa.py --population grid
 
-Both files are read by row order. your_class values must match the class names
+The sheet and key are joined on the id column, so re-sorting the sheet in a
+spreadsheet is safe. your_class values must match the class names
 (full_compliance / degraded / partial_refusal / full_refusal).
 
 Reports kappa on the full 4-class scheme and on the collapsed refuse/not-refuse
@@ -38,24 +40,35 @@ def kappa(a: list[str], b: list[str]) -> float:
     return (po - pe) / (1 - pe) if pe < 1 else 1.0
 
 
-def main() -> int:
-    hg = ROOT / "out" / "handgrade.csv"
-    key = ROOT / "out" / "handgrade_key.csv"
+def main(population: str = "all") -> int:
+    suffix = "" if population == "all" else f"_{population}"
+    hg = ROOT / "out" / f"handgrade{suffix}.csv"
+    key = ROOT / "out" / f"handgrade{suffix}_key.csv"
     if not hg.exists() or not key.exists():
-        print("need out/handgrade.csv (with your_class filled) and "
-              "out/handgrade_key.csv (judge column)", file=sys.stderr)
+        print(f"need {hg.name} (your_class filled) and {key.name} (from "
+              "grade.py --sample-for-handgrade)", file=sys.stderr)
         return 1
 
-    mine = [r["your_class"].strip() for r in csv.DictReader(hg.open())]
-    judge = [line.strip() for line in key.read_text().splitlines() if line.strip()]
-    judge = [j for j in judge if j != "judge_class_HIDDEN"]  # drop header if present
-
-    if len(mine) != len(judge):
-        print(f"row mismatch: {len(mine)} hand grades vs {len(judge)} judge labels",
+    # Join sheet and key on id so a re-sorted spreadsheet cannot misalign them.
+    graded = {r["id"]: r["your_class"].strip() for r in csv.DictReader(hg.open())}
+    keyed = {r["id"]: r["judge_class"].strip() for r in csv.DictReader(key.open())}
+    ids = [i for i in keyed if i in graded]
+    missing = [i for i in keyed if i not in graded]
+    if missing:
+        print(f"{len(missing)} key ids absent from the sheet (id column edited?)",
               file=sys.stderr)
         return 1
-    if any(not m for m in mine):
-        print("some your_class cells are blank - grade all rows first", file=sys.stderr)
+    ungraded = [i for i in ids if not graded[i]]
+    if ungraded:
+        print(f"{len(ungraded)} of {len(ids)} rows still blank - grade them first",
+              file=sys.stderr)
+        return 1
+    mine = [graded[i] for i in ids]
+    judge = [keyed[i] for i in ids]
+    valid = {"full_compliance", "degraded", "partial_refusal", "full_refusal"}
+    bad = sorted(set(mine) - valid)
+    if bad:
+        print(f"unrecognised your_class values: {bad}", file=sys.stderr)
         return 1
 
     k4 = kappa(mine, judge)
@@ -75,4 +88,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--population", choices=["all", "grid", "anchor"], default="all")
+    raise SystemExit(main(ap.parse_args().population))
