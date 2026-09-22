@@ -1,2 +1,12 @@
 __pycache__/
 *.pyc
+
+# data + outputs (regenerate locally; anchor completions are NOT released)
+out/
+*.jsonl
+data/prompts.jsonl
+
+# secrets / env
+.env
+.venv/
+env/
