@@ -1,4 +1,3 @@
 # Write-up
 
-Place the report PDF here (e.g. `defensive-refusal-bias.pdf`).
-The project README links to this folder.
+[Apart research hackathon work.pdf](https://github.com/user-attachments/files/32541289/Apart.research.hackathon.work.pdf)
